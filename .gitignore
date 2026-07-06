@@ -1,0 +1,38 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Claude / AI tooling
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Logs / internal planning docs (changelogs, project spec, living TODO — not for the public repo)
+logs/
+*.log
+uvicorn.log
+project_context.md
+TODO.md
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data / caches
+data/*.cache
+.cache/

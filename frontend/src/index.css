@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --color-base: #05060a;
+  --color-base-2: #0d0f1a;
+  --color-accent: #0a84ff;
+  --color-accent-soft: #64d2ff;
+  --color-good: #30d158;
+  --color-warn: #ffd60a;
+  --color-bad: #ff453a;
+  --font-sans: "Inter", "SF Pro Display", system-ui, -apple-system, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Liquid-glass surface: frosted panel with a soft inner specular highlight */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 28px;
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 0 40px rgba(255, 255, 255, 0.02),
+    0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.glass-panel-tight {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* Animated mesh-gradient backdrop blobs, pure CSS, GPU-friendly */
+.blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+@keyframes drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(6vw, 4vh) scale(1.12); }
+  66% { transform: translate(-4vw, 6vh) scale(0.95); }
+}
+
+@keyframes drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-8vw, -3vh) scale(1.08); }
+  70% { transform: translate(5vw, -6vh) scale(0.92); }
+}
+
+@keyframes drift-c {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(4vw, -5vh) scale(1.15); }
+}
+
+.blob-a { animation: drift-a 22s ease-in-out infinite; }
+.blob-b { animation: drift-b 28s ease-in-out infinite; }
+.blob-c { animation: drift-c 34s ease-in-out infinite; }
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}

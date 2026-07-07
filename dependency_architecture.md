@@ -161,7 +161,12 @@ Returns top-3 `payload["text"]` by combined score.
 Oversample factor = 5× before re-ranking.
 
 ### Client Module (`db/qdrant.py`)
-- `get_qdrant()` — module-level singleton, `AsyncQdrantClient(url=settings.qdrant_url)`
+- `get_qdrant()` — module-level singleton,
+  `AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None, timeout=60)`.
+  `api_key` required for Qdrant Cloud (self-hosted Docker Qdrant doesn't need one, hence `or None`).
+  `timeout=60` (Phase 12) — the client default is too short for uploading a multi-point batch over
+  a real network connection to Qdrant Cloud; only surfaced once actually deploying, since local dev
+  always talked to a `localhost` container with negligible latency
 - `init_collection()` — called at FastAPI startup; creates collection if not exists
 - `close()` — called at FastAPI shutdown
 - `COLLECTION_NAME = "knowledge_base"`, `VECTOR_DIM = 768`
@@ -302,6 +307,63 @@ hardcoded. Live-verified: built image run against the real local Docker Compose 
 production-shape env vars (real Groq + HF credentials) — migrations ran, app started, `GET /health`
 returned fully `"ok"` across all 6 services.
 
+## Deployment (Phase 12 — Live)
+
+All seven components are deployed and wired together in production:
+
+| Component | Platform |
+|---|---|
+| Backend | Render (Docker, free tier, auto-deploy on push to `main`) |
+| Frontend | Cloudflare Pages, via Workers static assets (`frontend/wrangler.jsonc`) |
+| PostgreSQL | Neon (pg18, pooled `asyncpg` connection, `?ssl=require` not `sslmode=require`) |
+| MongoDB | MongoDB Atlas (free M0, network access `0.0.0.0/0` — no static Render IP to allowlist) |
+| Redis | Upstash (`rediss://` TLS) |
+| Qdrant | Qdrant Cloud (`QDRANT_API_KEY` now wired — see Client Module above) |
+| Embeddings | HF Inference Providers (`BAAI/bge-base-en-v1.5`), Ollama kept as coded fallback |
+
+### `frontend/wrangler.jsonc` (new file)
+Cloudflare has merged Pages into the Workers product; deploying a static SPA now requires this
+config file rather than the classic "build command + output directory" Pages UI flow:
+```json
+{
+  "name": "interview-bot",
+  "compatibility_date": "2025-01-01",
+  "assets": { "directory": "./dist", "not_found_handling": "single-page-application" }
+}
+```
+`not_found_handling: "single-page-application"` is required for `react-router-dom`'s
+`BrowserRouter` — without it, directly navigating to a client-side route 404s instead of falling
+back to `index.html`.
+
+### Bugs Found and Fixed Live This Phase
+1. **Frontend shipped with no API URL.** Vite bakes `VITE_API_BASE_URL`/`VITE_WS_BASE_URL`
+   (`frontend/src/lib/apiClient.ts`) into the JS bundle at build time; they weren't set before the
+   first Cloudflare build, so every request went to a literal `undefined/auth/...`. Fixed via
+   Cloudflare's **build-scoped** environment variables (distinct from the Worker-runtime
+   "Variables and Secrets" tab, which refuses vars entirely on a static-assets-only deployment).
+2. **Knowledge-base ingestion silently discarded all its work on a Qdrant Cloud timeout** — see
+   the Ingestion Pipeline section above for the `_UPSERT_BATCH_SIZE`/`timeout=60` fix. Never
+   surfaced locally since local dev only ever wrote to a `localhost` Qdrant container.
+
+### Production Config
+`OAUTH_REDIRECT_BASE_URL` and `CORS_ALLOWED_ORIGINS` point at the live Cloudflare Workers origin
+(no longer `localhost` defaults); Google and GitHub OAuth apps have the production callback URI
+registered (Google supports multiple redirect URIs — localhost, frontend-dev, and production all
+coexist; GitHub OAuth Apps support only one, so production replaced local-dev there — see
+`TODO.md` for the trade-off this creates for local GitHub-login testing).
+
+### Live Verification
+`GET /health` on the deployed Render URL reports all 6 services `"ok"` against real production
+endpoints. Full interview pipeline (guest signup → session creation → live WS turn loop with real
+streamed Gemini output → per-turn scoring → closing report) exercised directly against production
+via `curl` and a raw `websockets` script — confirmed the entire stack works end-to-end in the real
+deployed environment, not just locally.
+
+### Operational: Render Free-Tier Keep-Alive
+A scheduled task pings `GET /health` on the deployed backend every 3 hours to prevent Render's
+free tier from spinning the instance down after 15 minutes of inactivity (which would otherwise
+cause a slow cold-start on the next real request).
+
 ## Utilities
 
 | Component | Technology | Version | Notes |
@@ -367,12 +429,16 @@ data/knowledge_base_seed.json
   ↓ seed → MongoDB knowledge_base collection (idempotent by question text)
   ↓ delete + recreate Qdrant collection (clean state)
   ↓ OllamaEmbeddingProvider.embed() per document
-  ↓ qdrant.upsert(points) in batches of 200 — payload includes jd_hash="static"
+  ↓ qdrant.upsert(points) in batches of 100 — payload includes jd_hash="static"
 ```
 Batched upserts (Phase 7): a single `client.upsert()` call with ~4,000 points failed outright
-(`ResponseHandlingException`) once the seed dataset grew past ~4,000 docs. `_UPSERT_BATCH_SIZE = 200`
-in `RAGService.ingest_knowledge_base()` fixes this. Full re-ingest of 4,180 docs takes ~85s locally
-(Ollama embedding is the bottleneck at ~50ms/doc sequential).
+(`ResponseHandlingException`) once the seed dataset grew past ~4,000 docs. `_UPSERT_BATCH_SIZE`
+(originally 200, lowered to 100 in Phase 12) in `RAGService.ingest_knowledge_base()` fixes this.
+Full re-ingest of 4,180 docs takes ~85s locally against a `localhost` Qdrant container (Ollama
+embedding is the bottleneck at ~50ms/doc sequential) — against Qdrant Cloud over a real network
+connection this takes considerably longer (real-world network latency per HF embedding call and
+per upload batch, not local-loopback speed); see "Deployment (Phase 12)" below for a real
+`WriteTimeout` bug this surfaced that never showed up locally.
 
 ### Prerequisite
 ```

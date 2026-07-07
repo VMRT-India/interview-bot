@@ -34,7 +34,7 @@ Full technical detail lives in [`docs/HLD.md`](docs/HLD.md) (architecture) and
 | Vector search | Qdrant (RAG retrieval over the knowledge base) |
 | Cache / session state | Redis |
 | LLM | Google Gemini (app default) or Groq — pluggable per session, users can bring their own key |
-| Embeddings | Ollama (`nomic-embed-text`), local/self-hosted |
+| Embeddings | Hugging Face Inference Providers (`BAAI/bge-base-en-v1.5`) in production; Ollama (`nomic-embed-text`) for local dev, kept as a coded fallback |
 
 See [`docs/HLD.md`](docs/HLD.md) for how these pieces actually fit together, and
 `dependency_architecture.md` for the full engineering-level reference (module dependency graph,
@@ -64,6 +64,9 @@ for the subset that doesn't need Docker).
 
 ## Project status
 
-Feature-complete for a first public release (frontend, auth, adaptive interview length, RAG,
-guest trial, BYOK). Not yet deployed — see the `## In progress / next up` section of the project's
-internal TODO for what's actually blocking that.
+Deployed. Backend on Render, frontend on Cloudflare Pages, PostgreSQL on Neon, MongoDB on
+MongoDB Atlas, Redis on Upstash, Qdrant on Qdrant Cloud, embeddings via Hugging Face Inference
+Providers — see `logs/changelog12.md` for the full deployment writeup and two real bugs found
+running the stack against real cloud infra for the first time. See the project's internal TODO
+for remaining follow-ups (Google OAuth consent screen publishing, Microsoft OAuth, live
+video/audio).

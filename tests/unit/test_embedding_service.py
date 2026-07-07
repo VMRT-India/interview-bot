@@ -163,3 +163,62 @@ def test_factory_unknown_provider_raises(monkeypatch):
     monkeypatch.setattr(config.settings, "embedding_provider", "unknown")
     with pytest.raises(ValueError, match="Unknown embedding provider"):
         get_embedding_service()
+
+
+async def test_ollama_health_check_true_on_success():
+    provider = OllamaEmbeddingProvider.__new__(OllamaEmbeddingProvider)
+    provider._client = AsyncMock()
+    provider._client.list = AsyncMock(return_value={})
+    assert await provider.health_check() is True
+
+
+async def test_ollama_health_check_false_on_failure():
+    provider = OllamaEmbeddingProvider.__new__(OllamaEmbeddingProvider)
+    provider._client = AsyncMock()
+    provider._client.list = AsyncMock(side_effect=RuntimeError("down"))
+    assert await provider.health_check() is False
+
+
+async def test_hf_health_check_true_on_200(monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "hf_api_token", "test-token")
+    provider = HuggingFaceEmbeddingProvider()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("services.embedding_service.httpx.AsyncClient", return_value=mock_ctx):
+        assert await provider.health_check() is True
+
+
+async def test_hf_health_check_false_on_error(monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "hf_api_token", "test-token")
+    provider = HuggingFaceEmbeddingProvider()
+
+    with patch("services.embedding_service.httpx.AsyncClient", side_effect=RuntimeError("down")):
+        assert await provider.health_check() is False
+
+
+async def test_failover_health_check_true_if_any_healthy():
+    a = OllamaEmbeddingProvider.__new__(OllamaEmbeddingProvider)
+    a._client = AsyncMock()
+    a._client.list = AsyncMock(side_effect=RuntimeError("down"))
+    b = OllamaEmbeddingProvider.__new__(OllamaEmbeddingProvider)
+    b._client = AsyncMock()
+    b._client.list = AsyncMock(return_value={})
+    failover = FailoverEmbeddingProvider([a, b])
+    assert await failover.health_check() is True
+
+
+async def test_failover_health_check_false_if_all_unhealthy():
+    a = OllamaEmbeddingProvider.__new__(OllamaEmbeddingProvider)
+    a._client = AsyncMock()
+    a._client.list = AsyncMock(side_effect=RuntimeError("down"))
+    failover = FailoverEmbeddingProvider([a])
+    assert await failover.health_check() is False

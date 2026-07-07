@@ -17,6 +17,9 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
 
+    @abstractmethod
+    async def health_check(self) -> bool: ...
+
 
 class OllamaEmbeddingProvider(EmbeddingProvider):
     def __init__(self) -> None:
@@ -35,6 +38,13 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return list(await asyncio.gather(*[self.embed(t) for t in texts]))
+
+    async def health_check(self) -> bool:
+        try:
+            await self._client.list()
+            return True
+        except Exception:
+            return False
 
 
 class HuggingFaceEmbeddingProvider(EmbeddingProvider):
@@ -71,6 +81,17 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return list(await asyncio.gather(*[self.embed(t) for t in texts]))
 
+    async def health_check(self) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"https://huggingface.co/api/models/{settings.hf_embedding_model}",
+                    headers=self._headers,
+                )
+                return response.status_code == 200
+        except Exception:
+            return False
+
 
 class FailoverEmbeddingProvider(EmbeddingProvider):
     """Tries each provider in order, falling over to the next on any failure.
@@ -98,6 +119,12 @@ class FailoverEmbeddingProvider(EmbeddingProvider):
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return list(await asyncio.gather(*[self.embed(t) for t in texts]))
+
+    async def health_check(self) -> bool:
+        for provider in self._providers:
+            if await provider.health_check():
+                return True
+        return False
 
 
 def get_embedding_service() -> EmbeddingProvider:

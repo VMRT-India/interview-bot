@@ -8,6 +8,7 @@ from db.postgres import AsyncSessionFactory
 from db.qdrant import get_qdrant
 from db.redis import get_redis
 from models.schemas.health import HealthResponse, ServiceHealth
+from services.embedding_service import get_embedding_service
 from services.llm_service import llm_service
 
 router = APIRouter()
@@ -38,9 +39,21 @@ async def _check_redis() -> ServiceHealth:
         return ServiceHealth(status="error", detail=str(e))
 
 
-async def _check_ollama() -> ServiceHealth:
+async def _check_llm() -> ServiceHealth:
     ok = await llm_service.health_check()
-    return ServiceHealth(status="ok") if ok else ServiceHealth(status="error", detail="ollama unreachable")
+    return ServiceHealth(status="ok") if ok else ServiceHealth(status="error", detail="LLM provider unreachable")
+
+
+async def _check_embeddings() -> ServiceHealth:
+    try:
+        ok = await get_embedding_service().health_check()
+        return (
+            ServiceHealth(status="ok")
+            if ok
+            else ServiceHealth(status="error", detail="embedding provider unreachable")
+        )
+    except Exception as e:
+        return ServiceHealth(status="error", detail=str(e))
 
 
 async def _check_qdrant() -> ServiceHealth:
@@ -57,12 +70,13 @@ async def health() -> HealthResponse:
         _check_postgres(),
         _check_mongo(),
         _check_redis(),
-        _check_ollama(),
+        _check_llm(),
         _check_qdrant(),
+        _check_embeddings(),
         return_exceptions=True,
     )
 
-    labels = ["postgres", "mongo", "redis", "ollama", "qdrant"]
+    labels = ["postgres", "mongo", "redis", "llm", "qdrant", "embeddings"]
     services: dict[str, ServiceHealth] = {}
     for label, result in zip(labels, results):
         if isinstance(result, Exception):

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     mongo_db: str = "interview_bot"
     redis_url: str = "redis://localhost:6379"
     qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
 
     ollama_host: str = "http://localhost:11434"
     ollama_timeout: int = 120

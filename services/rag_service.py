@@ -5,7 +5,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from db.mongo import knowledge_base_col
 from db.qdrant import COLLECTION_NAME, get_qdrant
-from services.embedding_service import OllamaEmbeddingProvider, get_embedding_service
+from services.embedding_service import EmbeddingProvider, get_embedding_service
 
 logger = structlog.get_logger()
 
@@ -18,7 +18,7 @@ _UPSERT_BATCH_SIZE = 200
 
 class RAGService:
     def __init__(self) -> None:
-        self._embedder: OllamaEmbeddingProvider = get_embedding_service()  # type: ignore[assignment]
+        self._embedder: EmbeddingProvider = get_embedding_service()
 
     # ------------------------------------------------------------------
     # Retrieval

@@ -31,9 +31,14 @@ class Settings(BaseSettings):
 
     tavily_api_key: str = ""
 
+    # "ollama" (local daemon) | "huggingface" (HF's free Inference API, Ollama kept as fallback)
     embedding_provider: str = "ollama"
     embedding_model: str = "nomic-embed-text"
     embedding_dim: int = 768
+    hf_api_token: str = ""
+    # bge-base, not nomic — nomic-embed-text-v1.5 has no live HF inference provider
+    # (verified live: empty inferenceProviderMapping), bge-base is 768-dim and live
+    hf_embedding_model: str = "BAAI/bge-base-en-v1.5"
 
     log_level: str = "INFO"
     # Absolute last-resort circuit breaker, not the normal termination path (Phase 8 —

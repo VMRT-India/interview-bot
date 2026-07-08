@@ -391,7 +391,7 @@ cause a slow cold-start on the next real request).
 ### RAG Pipeline (Phase 6+, 3-tier fallback since Phase 7)
 ```
 User answer (previous turn) OR domain name (turn 0)
-  ↓ OllamaEmbeddingProvider.embed()
+  ↓ embedding_service.embed() — HF Inference Providers in production, Ollama for local dev
   ↓ Qdrant dual search: cosine + euclid named vectors (top-15 each)
      filter: domain + jd_hash
   ↓ Client-side re-rank: 0.7 × cosine + 0.3 × (1/(1+l2))
@@ -428,23 +428,28 @@ data/knowledge_base_seed.json
   ↓ scripts/ingest_knowledge_base.py
   ↓ seed → MongoDB knowledge_base collection (idempotent by question text)
   ↓ delete + recreate Qdrant collection (clean state)
-  ↓ OllamaEmbeddingProvider.embed() per document
+  ↓ embedding_service.embed() per document — HF Inference Providers in production, Ollama for local dev
   ↓ qdrant.upsert(points) in batches of 100 — payload includes jd_hash="static"
 ```
 Batched upserts (Phase 7): a single `client.upsert()` call with ~4,000 points failed outright
 (`ResponseHandlingException`) once the seed dataset grew past ~4,000 docs. `_UPSERT_BATCH_SIZE`
 (originally 200, lowered to 100 in Phase 12) in `RAGService.ingest_knowledge_base()` fixes this.
-Full re-ingest of 4,180 docs takes ~85s locally against a `localhost` Qdrant container (Ollama
-embedding is the bottleneck at ~50ms/doc sequential) — against Qdrant Cloud over a real network
-connection this takes considerably longer (real-world network latency per HF embedding call and
-per upload batch, not local-loopback speed); see "Deployment (Phase 12)" below for a real
-`WriteTimeout` bug this surfaced that never showed up locally.
+Full re-ingest of 4,180 docs takes ~85s locally against a `localhost` Qdrant container with Ollama
+embedding (the bottleneck at ~50ms/doc sequential) — against Qdrant Cloud + HF Inference Providers
+over a real network connection (the actual production path, live-verified in Phase 12) this takes
+considerably longer, on the order of 25–90 minutes depending on HF API latency, since neither the
+embedding calls nor the Qdrant upload are local-loopback speed anymore. A `timeout=60` on
+`AsyncQdrantClient` (`db/qdrant.py`) was also required in Phase 12 — the client's short default
+timeout caused a real production `WriteTimeout` that discarded an entire completed embedding pass
+before that fix.
 
-### Prerequisite
+### Prerequisite (local dev only, `EMBEDDING_PROVIDER=ollama`)
 ```
-ollama pull nomic-embed-text    # required before running ingest script
+ollama pull nomic-embed-text    # required before running ingest script locally
 python scripts/ingest_knowledge_base.py
 ```
+Production runs with `EMBEDDING_PROVIDER=huggingface` (`HF_API_TOKEN` set) instead — no local
+Ollama daemon needed; see "Deployment (Phase 12)" below.
 
 ---
 
@@ -987,31 +992,31 @@ Set in the `client` fixture so that unhandled app exceptions (e.g., FK `Integrit
 
 ## Stack Summary (Current)
 
-| Layer | Previous (Phase 1–3) | Phase 4 | Phase 5 | Phase 6 | Phase 7 | Phase 8 | Phase 9 | Phase 10 | Phase 11 |
-|---|---|---|---|---|---|---|---|---|---|
-| LLM (cloud, app-default) | Groq cloud (active in Phase 1–2) | Groq cloud (kept for testing) | Unchanged | Unchanged | Active model: `openai/gpt-oss-120b` (was `llama-3.3-70b-versatile`) | Unchanged | **Switched to Google Gemini** (`gemini-2.5-flash-lite`, cheapest current model) — two API keys on separate projects, wrapped in `FailoverLLMService`. Groq remains available via `LLM_PROVIDER=groq` and stays the BYOK default | Unchanged | Unchanged |
-| LLM runner (dev) | Ollama | MLX-LM (Apple Silicon, OpenAI-compatible) | Unchanged | Unchanged | Unchanged (still not in active use) | Unchanged | Unchanged | Unchanged | Unchanged |
-| LLM runner (prod) | — | vLLM (Linux/NVIDIA, same interface) | Unchanged | Unchanged | Unchanged (not yet deployed) | Unchanged | Unchanged | Unchanged | Unchanged |
-| Embeddings | Ollama nomic-embed-text | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — flagged deploy blocker, no cloud fallback yet (RAG retrieval degrades to empty context, doesn't crash) | **Cloud fallback resolved**: `EMBEDDING_PROVIDER=huggingface` → `HuggingFaceEmbeddingProvider` (`BAAI/bge-base-en-v1.5`, not the originally-planned `nomic-embed-text-v1.5`, which was live-verified to have zero active HF inference providers) wrapped in `FailoverEmbeddingProvider` with Ollama kept as fallback. Ollama stays the local-dev default | + `health_check()` on every `EmbeddingProvider`; `/health`'s embedding check was previously entirely missing (see Observability section) |
-| Vector DB | pgvector (inside PostgreSQL) | Qdrant (self-hosted) | Unchanged | JD-hash payload field added; `_STATIC_HASH="static"` for seed docs | Batched upserts (200/batch); 4,180 points indexed | Unchanged | Unchanged | Unchanged | Unchanged |
-| Relational DB | PostgreSQL + vector extension | PostgreSQL (vector ext removed) | Unchanged | Unchanged (no new tables) | Unchanged (no new tables) | `sessions.resume_text`, `sessions.target_minutes` (migration `0005`) | `users.is_guest`, `users.free_sessions_used` (migration `0006`) | Unchanged | Unchanged |
-| Document DB | MongoDB | Unchanged | Unchanged | Unchanged | Unchanged | New `session_reports` collection (persisted closing reports) | Unchanged | Unchanged | Unchanged |
-| Cache | Redis | Unchanged | Unchanged | JD parsed cache: `jd:{hash}:parsed` TTL 24h | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
-| API framework | FastAPI | Unchanged | Unchanged | Unchanged | Unchanged | + CORSMiddleware (frontend origin) | Unchanged | Unchanged | Unchanged |
-| JD parsing | — | — | — | `JDService` via LLM; `KnowledgeProvider` ABC | Unchanged, `json_mode=True` | + `estimated_duration_minutes` field | Unchanged | Unchanged | Unchanged |
-| JD knowledge | — | — | — | `LLMKnowledgeProvider` synthesizes role-specific Q&A | + skill-gap targeting + Tavily company-style lookup | Unchanged | Unchanged | Unchanged | Unchanged |
-| External search | — | — | — | — | Tavily REST API (`services/company_lookup_service.py`) | + `search_interview_duration()` | Unchanged | Unchanged | Unchanged |
-| JSON parsing | naive find-`{`/find-`}` + `json.loads` (3 duplicated copies) | Unchanged | Unchanged | Unchanged | Unified `services/json_utils.py`; `json.JSONDecoder().raw_decode()` + `json_mode=True` | Unchanged | Unchanged | Unchanged | Unchanged |
-| Static KB size | 24 docs | Unchanged | Unchanged | Unchanged | 4,180 docs (TECHNICAL/BEHAVIORAL/HR) | Unchanged | Unchanged | Unchanged | Unchanged |
-| Auth | — | — | — | — | JWT (bcrypt + pyjwt) + OAuth (Google/GitHub live; Microsoft pending) + BYOK (Fernet-encrypted keys) | Unchanged (OAuth→SPA handoff is frontend/config-only, no backend change) | + guest accounts (`POST /auth/guest`), free-tier session quota; fixed a real OAuth→SPA bug (`oauth_callback_path_template` — the hardcoded backend-only redirect path silently broke the frontend handoff Phase 8 documented as "no backend change needed") | Unchanged | Unchanged |
-| RAG fallback | Domain-only | Unchanged | JD-hash filter | Unchanged | 3-tier: JD-hash → company-slug (11 pre-generated companies) → static | Unchanged | Unchanged | Unchanged | Unchanged |
-| Interview length | Fixed `max_interview_turns` (10) | Unchanged | Unchanged | Unchanged | Unchanged | Adaptive: time + LLM judgment, researched/stated target, real closing turn; `max_interview_turns` now an absolute safety valve (40) | + candidate-initiated Terminate → `ABANDONED` (distinct from natural `COMPLETED` close), scored from whatever turns happened | Unchanged | Unchanged |
-| Candidate input | JD text only | Unchanged | Unchanged | Unchanged | Unchanged | + resume PDF upload, threaded into interviewer prompt | Unchanged | Unchanged | Unchanged |
-| Frontend | None | None | None | None | None | React + TS + Vite + Tailwind SPA (`frontend/`) | + guest entry point, quota-exceeded messaging, Terminate button | Unchanged | Unchanged |
-| Test runner | — | — | pytest + pytest-asyncio 1.4.0 | +15 unit tests (test_jd_service.py) | +11 unit (test_auth_service.py) + 29 integration (test_auth.py) — 109 tests total (61 unit + 48 integration) | +25 unit + 21 integration — 155 tests total (86 unit + 69 integration) | +11 unit (gemini factory + `test_failover_llm_service.py`) + 10 integration (quota, terminate, guest) — 176 tests total (97 unit + 79 integration) | +10 unit (`HuggingFaceEmbeddingProvider`, `FailoverEmbeddingProvider`, factory branches) — 186 tests total (107 unit + 79 integration) | +6 unit (`health_check()` on every `EmbeddingProvider`) — **192 tests total (113 unit + 79 integration)** |
-| Test isolation (PG) | — | — | TRUNCATE per test (API); session DB lifecycle | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
-| Test isolation (Redis) | — | — | DB index 1 + FLUSHDB per test | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
-| Test isolation (Mongo) | — | — | Drop `interview_bot_test` per test | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| Layer | Previous (Phase 1–3) | Phase 4 | Phase 5 | Phase 6 | Phase 7 | Phase 8 | Phase 9 | Phase 10 | Phase 11 | Phase 12 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| LLM (cloud, app-default) | Groq cloud (active in Phase 1–2) | Groq cloud (kept for testing) | Unchanged | Unchanged | Active model: `openai/gpt-oss-120b` (was `llama-3.3-70b-versatile`) | Unchanged | **Switched to Google Gemini** (`gemini-2.5-flash-lite`, cheapest current model) — two API keys on separate projects, wrapped in `FailoverLLMService`. Groq remains available via `LLM_PROVIDER=groq` and stays the BYOK default | Unchanged | Unchanged | Unchanged — live-verified against production Render deploy |
+| LLM runner (dev) | Ollama | MLX-LM (Apple Silicon, OpenAI-compatible) | Unchanged | Unchanged | Unchanged (still not in active use) | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| LLM runner (prod) | — | vLLM (Linux/NVIDIA, same interface) | Unchanged | Unchanged | Unchanged (not yet deployed) | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — Render/Gemini remains the actual deployed path, vLLM still unused |
+| Embeddings | Ollama nomic-embed-text | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — flagged deploy blocker, no cloud fallback yet (RAG retrieval degrades to empty context, doesn't crash) | **Cloud fallback resolved**: `EMBEDDING_PROVIDER=huggingface` → `HuggingFaceEmbeddingProvider` (`BAAI/bge-base-en-v1.5`, not the originally-planned `nomic-embed-text-v1.5`, which was live-verified to have zero active HF inference providers) wrapped in `FailoverEmbeddingProvider` with Ollama kept as fallback. Ollama stays the local-dev default | + `health_check()` on every `EmbeddingProvider`; `/health`'s embedding check was previously entirely missing (see Observability section) | **Live-verified at full production scale**: 4,178/4,180 seed docs successfully embedded via HF against Qdrant Cloud — see Vector DB row for a real bug this surfaced |
+| Vector DB | pgvector (inside PostgreSQL) | Qdrant (self-hosted) | Unchanged | JD-hash payload field added; `_STATIC_HASH="static"` for seed docs | Batched upserts (200/batch); 4,180 points indexed | Unchanged | Unchanged | Unchanged | Unchanged | **Deployed to Qdrant Cloud**; `qdrant_api_key` actually wired into `AsyncQdrantClient` (a prior TODO note had incorrectly claimed this was already done); `timeout=60` added (was unset) and `_UPSERT_BATCH_SIZE` lowered 200→100 after a real `WriteTimeout` silently discarded a fully-completed embedding pass with no retry — never surfaced against a local `localhost` container |
+| Relational DB | PostgreSQL + vector extension | PostgreSQL (vector ext removed) | Unchanged | Unchanged (no new tables) | Unchanged (no new tables) | `sessions.resume_text`, `sessions.target_minutes` (migration `0005`) | `users.is_guest`, `users.free_sessions_used` (migration `0006`) | Unchanged | Unchanged | **Deployed to Neon** (pg18, pooled `asyncpg` connection — `?ssl=require`, not `sslmode=require`); all 6 migrations applied cleanly |
+| Document DB | MongoDB | Unchanged | Unchanged | Unchanged | Unchanged | New `session_reports` collection (persisted closing reports) | Unchanged | Unchanged | Unchanged | **Deployed to MongoDB Atlas** (free M0 tier, `0.0.0.0/0` network access — no static Render IP to allowlist) |
+| Cache | Redis | Unchanged | Unchanged | JD parsed cache: `jd:{hash}:parsed` TTL 24h | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | **Deployed to Upstash** (`rediss://` TLS connection) |
+| API framework | FastAPI | Unchanged | Unchanged | Unchanged | Unchanged | + CORSMiddleware (frontend origin) | Unchanged | Unchanged | Unchanged | `CORS_ALLOWED_ORIGINS`/`OAUTH_REDIRECT_BASE_URL` repointed from `localhost` defaults to the live Cloudflare Pages origin |
+| JD parsing | — | — | — | `JDService` via LLM; `KnowledgeProvider` ABC | Unchanged, `json_mode=True` | + `estimated_duration_minutes` field | Unchanged | Unchanged | Unchanged | Unchanged |
+| JD knowledge | — | — | — | `LLMKnowledgeProvider` synthesizes role-specific Q&A | + skill-gap targeting + Tavily company-style lookup | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| External search | — | — | — | — | Tavily REST API (`services/company_lookup_service.py`) | + `search_interview_duration()` | Unchanged | Unchanged | Unchanged | Unchanged |
+| JSON parsing | naive find-`{`/find-`}` + `json.loads` (3 duplicated copies) | Unchanged | Unchanged | Unchanged | Unified `services/json_utils.py`; `json.JSONDecoder().raw_decode()` + `json_mode=True` | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| Static KB size | 24 docs | Unchanged | Unchanged | Unchanged | 4,180 docs (TECHNICAL/BEHAVIORAL/HR) | Unchanged | Unchanged | Unchanged | Unchanged | 4,178 of 4,180 actually indexed into the live production Qdrant Cloud collection (2 skipped on transient HF errors) |
+| Auth | — | — | — | — | JWT (bcrypt + pyjwt) + OAuth (Google/GitHub live; Microsoft pending) + BYOK (Fernet-encrypted keys) | Unchanged (OAuth→SPA handoff is frontend/config-only, no backend change) | + guest accounts (`POST /auth/guest`), free-tier session quota; fixed a real OAuth→SPA bug (`oauth_callback_path_template` — the hardcoded backend-only redirect path silently broke the frontend handoff Phase 8 documented as "no backend change needed") | Unchanged | Unchanged | Production OAuth redirect URIs registered with Google (multiple URIs supported) and GitHub (single URI only — broke local GitHub-OAuth testing, accepted trade-off); Google consent screen still in "Testing" status, not yet published |
+| RAG fallback | Domain-only | Unchanged | JD-hash filter | Unchanged | 3-tier: JD-hash → company-slug (11 pre-generated companies) → static | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — live-verified against the populated production Qdrant Cloud collection |
+| Interview length | Fixed `max_interview_turns` (10) | Unchanged | Unchanged | Unchanged | Unchanged | Adaptive: time + LLM judgment, researched/stated target, real closing turn; `max_interview_turns` now an absolute safety valve (40) | + candidate-initiated Terminate → `ABANDONED` (distinct from natural `COMPLETED` close), scored from whatever turns happened | Unchanged | Unchanged | Unchanged |
+| Candidate input | JD text only | Unchanged | Unchanged | Unchanged | Unchanged | + resume PDF upload, threaded into interviewer prompt | Unchanged | Unchanged | Unchanged | Unchanged |
+| Frontend | None | None | None | None | None | React + TS + Vite + Tailwind SPA (`frontend/`) | + guest entry point, quota-exceeded messaging, Terminate button | Unchanged | Unchanged | **Deployed to Cloudflare Pages** via Workers static assets (new `frontend/wrangler.jsonc` — Cloudflare merged Pages into Workers, requiring this config instead of the classic build-command/output-dir flow); fixed a real bug where the first build shipped with `VITE_API_BASE_URL`/`VITE_WS_BASE_URL` unset (baked-in literal `undefined` in every API call) |
+| Test runner | — | — | pytest + pytest-asyncio 1.4.0 | +15 unit tests (test_jd_service.py) | +11 unit (test_auth_service.py) + 29 integration (test_auth.py) — 109 tests total (61 unit + 48 integration) | +25 unit + 21 integration — 155 tests total (86 unit + 69 integration) | +11 unit (gemini factory + `test_failover_llm_service.py`) + 10 integration (quota, terminate, guest) — 176 tests total (97 unit + 79 integration) | +10 unit (`HuggingFaceEmbeddingProvider`, `FailoverEmbeddingProvider`, factory branches) — 186 tests total (107 unit + 79 integration) | +6 unit (`health_check()` on every `EmbeddingProvider`) — 192 tests total (113 unit + 79 integration) | Unchanged (192 tests) — this phase was deployment execution, verified live against production instead of new test coverage |
+| Test isolation (PG) | — | — | TRUNCATE per test (API); session DB lifecycle | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| Test isolation (Redis) | — | — | DB index 1 + FLUSHDB per test | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
+| Test isolation (Mongo) | — | — | Drop `interview_bot_test` per test | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
 
 ---
 

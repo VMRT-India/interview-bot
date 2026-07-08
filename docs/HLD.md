@@ -28,7 +28,7 @@ graph TB
         RAG["RAG Service<br/>(retrieval + ingestion)"]
         JD["JD Service<br/>(parsing + knowledge synthesis)"]
         SCORE["Scoring Service"]
-        EMB["Embedding Service<br/>(Ollama)"]
+        EMB["Embedding Service<br/>(HF Inference Providers,<br/>Ollama fallback)"]
         LOOKUP["Company Lookup<br/>(Tavily search)"]
     end
 
@@ -42,7 +42,8 @@ graph TB
     subgraph External["External APIs"]
         GEMINI["Google Gemini"]
         GROQ["Groq"]
-        OLLAMA["Ollama<br/>(local embedding daemon)"]
+        HF["Hugging Face<br/>Inference Providers"]
+        OLLAMA["Ollama<br/>(local dev / fallback)"]
         TAVILY["Tavily Search"]
     end
 
@@ -71,6 +72,7 @@ graph TB
     RAG --> QDRANT
     RAG --> MONGO
     RAG --> EMB
+    EMB --> HF
     EMB --> OLLAMA
     SCORE --> PG
     SCORE --> LLM
@@ -89,7 +91,7 @@ graph TB
 | **RAG Service** | Retrieves grounding context for the interviewer's next question from Qdrant, in three tiers — exact job-description match, pre-generated company match, static knowledge base fallback — and separately handles ingesting new content into Qdrant. |
 | **JD Service** | Parses a submitted job description into structured fields, synthesizes role-specific interview knowledge, and resolves a realistic target interview duration (JD-stated → web-researched → default). |
 | **Scoring Service** | Evaluates a candidate's answer against the question, producing a structured score (correctness/depth/communication) — written silently, never shown mid-interview. |
-| **Embedding Service** | Turns text into vectors for RAG (currently Ollama-only — see §7, Known Gaps). |
+| **Embedding Service** | Turns text into vectors for RAG — Hugging Face Inference Providers (`BAAI/bge-base-en-v1.5`) in production, with Ollama (`nomic-embed-text`) as a coded local-dev/fallback path. |
 | **Company Lookup** | Real web search (Tavily) for a named company's actual interview style and typical duration, used to make JD-driven sessions and duration estimates more realistic than guesswork. |
 
 ## 4. Data Model (relational core)
@@ -239,14 +241,15 @@ never sees scores mid-interview, only in the final report.
 
 ## 8. Known Architecture Gaps (as of this writing)
 
-- **Embeddings have no cloud-hosted fallback.** RAG retrieval hard-depends on a locally-running
-  Ollama daemon (`nomic-embed-text`). It fails gracefully (empty context, not a crash) if Ollama is
-  unreachable — but that means RAG silently stops grounding questions rather than erroring loudly.
-  Not yet resolved for a deployed environment.
-- **Not yet deployed.** Feature-complete for a first release; deployment platform/topology is still
-  being decided.
+- **Deployed, but Google OAuth consent screen isn't published yet.** Still in Google Cloud
+  Console's "Testing" status, so real users see a "Google hasn't verified this app" interstitial.
+  Basic scopes only (`openid`/`email`/`profile`), so publishing doesn't require Google's manual
+  review — just hasn't been done yet.
+- **GitHub OAuth's single callback URL is pointed at production**, which broke local
+  `localhost:5173` GitHub-login testing (GitHub OAuth Apps support only one callback URL, unlike
+  Google). Accepted trade-off; a second GitHub OAuth App would restore local testing.
 - **Guest accounts are a browser-token identity only** — not abuse-hardened. Accepted trade-off at
   this stage, not an oversight.
 
 See `dependency_architecture.md` for the full, continuously-updated technical reference, and the
-project's internal TODO for the current prioritized list of what's actually blocking deployment.
+project's internal TODO for the current prioritized list of remaining follow-ups.

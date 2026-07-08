@@ -12,7 +12,8 @@ concrete advice for next time.
 ## Getting Started
 
 ### Option 1 — Try it without an account
-Click **"Try one interview without signing up"** on the login page. You'll be dropped straight into
+Click **"Try without signing up"** in the nav bar (visible on every page), or the same option on
+the login page. You'll be dropped straight into
 setting up an interview — no email, no password. This gives you exactly one free interview so you can
 see how it works before committing to an account. Note: because this doesn't create a real account,
 if you close your browser or clear your browsing data, there's no way to get back into that session

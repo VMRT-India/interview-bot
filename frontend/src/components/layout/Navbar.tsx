@@ -1,10 +1,24 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { Button } from "../ui/Button";
 
 export function Navbar() {
-  const { user, logout } = useAuth();
+  const { user, logout, continueAsGuest } = useAuth();
   const navigate = useNavigate();
+  const [guestLoading, setGuestLoading] = useState(false);
+
+  async function handleGuest() {
+    setGuestLoading(true);
+    try {
+      await continueAsGuest();
+      navigate("/interview/new");
+    } catch {
+      navigate("/login");
+    } finally {
+      setGuestLoading(false);
+    }
+  }
 
   return (
     <header className="sticky top-4 z-50 mx-auto mt-4 flex w-[min(1100px,92%)] items-center justify-between rounded-2xl border border-white/12 bg-white/6 px-5 py-3 backdrop-blur-xl">
@@ -44,6 +58,9 @@ export function Navbar() {
           </Button>
         ) : (
           <>
+            <Button variant="ghost" disabled={guestLoading} onClick={handleGuest}>
+              {guestLoading ? "Starting…" : "Try without signing up"}
+            </Button>
             <Link to="/login" className="text-sm text-white/70 hover:text-white">
               Log in
             </Link>

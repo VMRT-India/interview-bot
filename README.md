@@ -33,7 +33,7 @@ Full technical detail lives in [`docs/HLD.md`](docs/HLD.md) (architecture) and
 | Document data | MongoDB (transcripts, knowledge base, closing reports) |
 | Vector search | Qdrant (RAG retrieval over the knowledge base) |
 | Cache / session state | Redis |
-| LLM | Google Gemini (app default) or Groq — pluggable per session, users can bring their own key |
+| LLM | 5-tier free-provider failover (NVIDIA → Groq → Gemini → Gemini → Cerebras) as the app default, pluggable per session — users can bring their own key |
 | Embeddings | Hugging Face Inference Providers (`BAAI/bge-base-en-v1.5`) in production; Ollama (`nomic-embed-text`) for local dev, kept as a coded fallback |
 
 See [`docs/HLD.md`](docs/HLD.md) for how these pieces actually fit together, and

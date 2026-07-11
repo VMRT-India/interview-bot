@@ -24,7 +24,7 @@ graph TB
     end
 
     subgraph Services["Service Layer"]
-        LLM["LLM Service<br/>(Gemini / Groq / BYOK / failover)"]
+        LLM["LLM Service<br/>(NVIDIA / Groq / Gemini / Cerebras /<br/>BYOK / 5-tier failover)"]
         RAG["RAG Service<br/>(retrieval + ingestion)"]
         JD["JD Service<br/>(parsing + knowledge synthesis)"]
         SCORE["Scoring Service"]
@@ -42,6 +42,8 @@ graph TB
     subgraph External["External APIs"]
         GEMINI["Google Gemini"]
         GROQ["Groq"]
+        NVIDIA["NVIDIA NIM"]
+        CEREBRAS["Cerebras"]
         HF["Hugging Face<br/>Inference Providers"]
         OLLAMA["Ollama<br/>(local dev / fallback)"]
         TAVILY["Tavily Search"]
@@ -64,8 +66,10 @@ graph TB
     WS --> LLM
     WS --> SCORE
 
-    LLM --> GEMINI
+    LLM --> NVIDIA
     LLM --> GROQ
+    LLM --> GEMINI
+    LLM --> CEREBRAS
     JD --> LLM
     JD --> LOOKUP
     LOOKUP --> TAVILY
@@ -87,7 +91,7 @@ graph TB
 | **Sessions Router** | Creates sessions (enforcing the free-tier quota), lists a user's sessions, serves session detail/report, closes sessions (natural or candidate-terminated), JD/résumé PDF upload. |
 | **Interview WS Router** | The live interview loop: streams questions turn-by-turn over WebSocket, receives answers, decides when to close (adaptive length), triggers per-turn scoring as a background task. |
 | **Stats Router** | Public, unauthenticated platform-wide counts for the homepage. |
-| **LLM Service** | Abstracts away *which* LLM actually answers — app-default (Gemini, with two-key failover) or Groq, or a user's own BYOK key/provider. Every call site (question generation, scoring, closing report, JD parsing) goes through the same `generate()`/`stream_generate()` interface regardless of provider. |
+| **LLM Service** | Abstracts away *which* LLM actually answers — app-default is a 5-tier failover chain (NVIDIA → Groq → Gemini key 1 → Gemini key 2 → Cerebras, each a separate free-tier quota pool), or a user's own BYOK key/provider. Every call site (question generation, scoring, closing report, JD parsing) goes through the same `generate()`/`stream_generate()` interface regardless of provider. |
 | **RAG Service** | Retrieves grounding context for the interviewer's next question from Qdrant, in three tiers — exact job-description match, pre-generated company match, static knowledge base fallback — and separately handles ingesting new content into Qdrant. |
 | **JD Service** | Parses a submitted job description into structured fields, synthesizes role-specific interview knowledge, and resolves a realistic target interview duration (JD-stated → web-researched → default). |
 | **Scoring Service** | Evaluates a candidate's answer against the question, producing a structured score (correctness/depth/communication) — written silently, never shown mid-interview. |
@@ -250,6 +254,12 @@ never sees scores mid-interview, only in the final report.
   Google). Accepted trade-off; a second GitHub OAuth App would restore local testing.
 - **Guest accounts are a browser-token identity only** — not abuse-hardened. Accepted trade-off at
   this stage, not an oversight.
+- **The 5-tier LLM failover chain mitigates, but doesn't eliminate, free-tier rate-limit
+  exhaustion under heavy concurrent load.** Stress-testing during Phase 12 confirmed it raised
+  the concurrent-session success rate from 1-of-5 to 4-of-5 under an artificially heavy burst —
+  the one remaining failure exhausted all 5 free-tier quotas simultaneously, purely from
+  unusually concentrated test traffic. Real interviewer demo traffic is expected to be far
+  lighter, but this isn't a hard guarantee at extreme concurrency.
 
 See `dependency_architecture.md` for the full, continuously-updated technical reference, and the
 project's internal TODO for the current prioritized list of remaining follow-ups.

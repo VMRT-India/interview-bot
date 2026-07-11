@@ -62,8 +62,10 @@ qdrant:    qdrant/qdrant:latest
 
 | Component | Technology | Version | Notes |
 |---|---|---|---|
-| LLM (cloud, app-default — Phase 9) | Google Gemini | openai>=1.0 client (OpenAI-compat endpoint) | Model: `gemini-2.5-flash-lite` — deliberately the cheapest current Gemini model ($0.10/$0.40 per 1M tokens), chosen over newer/pricier 3.x Flash-Lite generations. Two API keys on **separate Google Cloud projects** (Gemini rate limits are enforced per-project, not per-key — same-project keys would share one quota pool and defeat the purpose) wrapped in `FailoverLLMService` |
-| LLM (cloud, prior default) | Groq cloud | 1.1.2 client | Model: `openai/gpt-oss-120b`; still available via `LLM_PROVIDER=groq`, kept as the BYOK default and for testing |
+| LLM (cloud, app-default — Phase 9) | Google Gemini | openai>=1.0 client (OpenAI-compat endpoint) | Model: `gemini-2.5-flash-lite` — deliberately the cheapest current Gemini model ($0.10/$0.40 per 1M tokens), chosen over newer/pricier 3.x Flash-Lite generations. Two API keys on **separate Google Cloud projects** (Gemini rate limits are enforced per-project, not per-key — same-project keys would share one quota pool and defeat the purpose), each a tier in the wider `FailoverLLMService` chain below |
+| LLM (cloud, first-preference fallback — Phase 12 follow-up) | NVIDIA NIM | openai>=1.0 client (OpenAI-compat endpoint, `https://integrate.api.nvidia.com/v1`) | Model: `nvidia/nemotron-3-super-120b-a12b`. Free tier's best observed RPM among the free options checked (~40 RPM), but NVIDIA does not publish a guaranteed quota — dynamically rate-limited by model/traffic, so treated as a real tier, not a guaranteed one |
+| LLM (cloud, prior default / mid-chain fallback) | Groq cloud | 1.1.2 client | Model: `openai/gpt-oss-120b`; still available directly via `LLM_PROVIDER=groq`, and reused as a fallback tier in the Gemini chain when a Groq key is configured (it already is, kept for BYOK) |
+| LLM (cloud, last-resort fallback — Phase 12 follow-up) | Cerebras | openai>=1.0 client (OpenAI-compat endpoint, `https://api.cerebras.ai/v1`) | Model: `gpt-oss-120b` (same model as the Groq tier — free, fast, generous 1M tokens/day). Free-tier context capped at 8K tokens, too small for this app's later-turn prompts (system prompt alone runs ~3,400 tokens before history/RAG context), so deliberately placed last rather than as an equal peer |
 | LLM (dev) | MLX-LM (local, Apple Silicon) | openai>=1.0 client | OpenAI-compatible API; port TBD when installed — not yet in active use |
 | LLM (production) | vLLM (Linux/NVIDIA) | openai>=1.0 client | Same OpenAI-compatible interface; switch via `LLM_BASE_URL` in `.env` only — not yet deployed anywhere |
 | Embeddings | Ollama (local, dev default) or Hugging Face Inference Providers (`EMBEDDING_PROVIDER=huggingface`, deploy path) | 0.3.3 client / httpx | Ollama: `nomic-embed-text`, 768-dim. HF: `BAAI/bge-base-en-v1.5`, also 768-dim — **not** `nomic-embed-text-v1.5`, which was live-verified to have zero active HF inference providers (`inferenceProviderMapping: {}` via HF's own API) despite being downloadable; bge-base is a comparable-quality, same-dimension substitute that's actually servable. `FailoverEmbeddingProvider` tries HF first, falls back to Ollama on any failure — harmless in an environment with no Ollama running (fails through quickly, same as any other embedding failure `RAGService` already degrades gracefully from) |
@@ -75,16 +77,39 @@ qdrant:    qdrant/qdrant:latest
 ### LLM Provider Factory (`services/llm_service.py`)
 - `_make_llm_service()` — returns provider based on `settings.llm_provider`
 - `"groq"` → `GroqLLMService`
-- `"gemini"` (Phase 9, currently active) → one or two `OpenAICompatLLMService` instances against Gemini's OpenAI-compat endpoint, using `gemini_api_key` / `gemini_api_key_2`; wrapped in `FailoverLLMService` when both keys are set, otherwise returns the single instance directly. Raises `ValueError` at startup if `llm_provider="gemini"` but no key is set — fails loud rather than silently falling through
+- `"gemini"` (Phase 9, currently active) → builds a **5-tier failover chain** (Phase 12
+  follow-up), each tier included only if its key is set, tried in this priority order:
+  1. NVIDIA (`nvidia_api_key`/`nvidia_model`)
+  2. Groq (`groq_api_key`, reused from the BYOK config)
+  3. Gemini key 1 (`gemini_api_key`)
+  4. Gemini key 2 (`gemini_api_key_2`, optional)
+  5. Cerebras (`cerebras_api_key`/`cerebras_model`, last resort — see 8K context caveat above)
+
+  Wrapped in `FailoverLLMService` whenever more than one tier is present, otherwise
+  returns the single instance directly. Raises `ValueError` at startup if
+  `llm_provider="gemini"` but no Gemini key is set (Gemini keys are still the only
+  *required* tier — the others are optional extras) — fails loud rather than silently
+  falling through
 - `"mlx"` → `OpenAICompatLLMService` (MLX-LM local / vLLM production — not yet in active use)
 - anything else (incl. `"ollama"`) → `LLMService` (fallback)
 - Switching local→production: set `LLM_BASE_URL` in `.env` — no code changes required
+- `_KNOWN_BYOK_BASE_URLS` now also lists `nvidia`/`cerebras` base URLs, reused for both
+  the app-default chain above and future BYOK use of either provider
 
-### Failover LLM Wrapper (`services/failover_llm_service.py`, Phase 9)
+### Failover LLM Wrapper (`services/failover_llm_service.py`, Phase 9, generalized Phase 12)
 - `FailoverLLMService(services: list)` — tries each underlying service in order; same shared interface (`generate`, `stream_generate`, `health_check`)
 - `generate()` / `health_check()`: straightforward try-next-on-exception
 - `stream_generate()`: only fails over if the failing service raised **before yielding any token** (the common shape of a rate-limit/connection error). A mid-stream failure after output has already started is re-raised as-is rather than retried on the next key — restarting would send a duplicated/broken response to a client that already has partial output
-- Built for spreading app-default load across multiple API keys under one rate-limit ceiling each — only actually useful if the keys are on **separate** accounts/projects; same-project keys share one quota pool (see AI/ML Services table above)
+- Originally built for spreading app-default load across multiple API keys on the
+  *same* provider (only useful if the keys are on **separate** accounts/projects — same-
+  project keys share one quota pool); Phase 12 confirmed it works identically well
+  chaining across **different providers entirely** (NVIDIA → Groq → Gemini → Cerebras),
+  since every wrapped service shares the same `generate`/`stream_generate`/`health_check`
+  interface regardless of provider. Root cause this chain was built to address: Gemini's
+  free-tier 20 RPM/project cap was getting exhausted under concurrent interview sessions,
+  surfacing as "Internal server error" to users — live-verified via local reproduction
+  (concurrent-session stress test) that chaining fixed it, raising the observed
+  concurrent-session success rate from 1-of-5 to 4-of-5 in an identical test
 
 ### LLM Service Design (shared interface)
 - `generate(prompt, system_prompt="", json_mode=False)` — non-streaming; wrapped in tenacity retry (`stop_after_attempt(3)`, `wait_exponential`)
@@ -994,7 +1019,7 @@ Set in the `client` fixture so that unhandled app exceptions (e.g., FK `Integrit
 
 | Layer | Previous (Phase 1–3) | Phase 4 | Phase 5 | Phase 6 | Phase 7 | Phase 8 | Phase 9 | Phase 10 | Phase 11 | Phase 12 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| LLM (cloud, app-default) | Groq cloud (active in Phase 1–2) | Groq cloud (kept for testing) | Unchanged | Unchanged | Active model: `openai/gpt-oss-120b` (was `llama-3.3-70b-versatile`) | Unchanged | **Switched to Google Gemini** (`gemini-2.5-flash-lite`, cheapest current model) — two API keys on separate projects, wrapped in `FailoverLLMService`. Groq remains available via `LLM_PROVIDER=groq` and stays the BYOK default | Unchanged | Unchanged | Unchanged — live-verified against production Render deploy |
+| LLM (cloud, app-default) | Groq cloud (active in Phase 1–2) | Groq cloud (kept for testing) | Unchanged | Unchanged | Active model: `openai/gpt-oss-120b` (was `llama-3.3-70b-versatile`) | Unchanged | **Switched to Google Gemini** (`gemini-2.5-flash-lite`, cheapest current model) — two API keys on separate projects, wrapped in `FailoverLLMService`. Groq remains available via `LLM_PROVIDER=groq` and stays the BYOK default | Unchanged | Unchanged | Live-verified against production Render deploy; **found a real bug** — Gemini's free-tier 20 RPM/project cap was getting exhausted under concurrent sessions, surfacing as "Internal server error." Fixed by extending the chain to 5 tiers: **NVIDIA (new, first preference) → Groq → Gemini key 1 → Gemini key 2 → Cerebras (new, last resort)** — each a genuinely separate free-tier quota pool |
 | LLM runner (dev) | Ollama | MLX-LM (Apple Silicon, OpenAI-compatible) | Unchanged | Unchanged | Unchanged (still not in active use) | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged |
 | LLM runner (prod) | — | vLLM (Linux/NVIDIA, same interface) | Unchanged | Unchanged | Unchanged (not yet deployed) | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — Render/Gemini remains the actual deployed path, vLLM still unused |
 | Embeddings | Ollama nomic-embed-text | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged | Unchanged — flagged deploy blocker, no cloud fallback yet (RAG retrieval degrades to empty context, doesn't crash) | **Cloud fallback resolved**: `EMBEDDING_PROVIDER=huggingface` → `HuggingFaceEmbeddingProvider` (`BAAI/bge-base-en-v1.5`, not the originally-planned `nomic-embed-text-v1.5`, which was live-verified to have zero active HF inference providers) wrapped in `FailoverEmbeddingProvider` with Ollama kept as fallback. Ollama stays the local-dev default | + `health_check()` on every `EmbeddingProvider`; `/health`'s embedding check was previously entirely missing (see Observability section) | **Live-verified at full production scale**: 4,178/4,180 seed docs successfully embedded via HF against Qdrant Cloud — see Vector DB row for a real bug this surfaced |

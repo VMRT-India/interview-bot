@@ -42,6 +42,7 @@ def test_factory_returns_openai_compat_for_gemini_single_key(monkeypatch):
     monkeypatch.setattr(config.settings, "llm_provider", "gemini")
     monkeypatch.setattr(config.settings, "gemini_api_key", "key-1")
     monkeypatch.setattr(config.settings, "gemini_api_key_2", "")
+    monkeypatch.setattr(config.settings, "groq_api_key", "")
     service = _make_llm_service()
     assert isinstance(service, OpenAICompatLLMService)
 
@@ -51,9 +52,24 @@ def test_factory_returns_failover_for_gemini_two_keys(monkeypatch):
     monkeypatch.setattr(config.settings, "llm_provider", "gemini")
     monkeypatch.setattr(config.settings, "gemini_api_key", "key-1")
     monkeypatch.setattr(config.settings, "gemini_api_key_2", "key-2")
+    monkeypatch.setattr(config.settings, "groq_api_key", "")
     service = _make_llm_service()
     assert isinstance(service, FailoverLLMService)
     assert len(service._services) == 2
+
+
+def test_factory_appends_groq_fallback_to_gemini_when_groq_key_set(monkeypatch):
+    # Phase 12 — a Groq key already configured for BYOK gets reused as a last-resort
+    # fallback tier, since it's a completely separate quota pool from Gemini's.
+    import config
+    monkeypatch.setattr(config.settings, "llm_provider", "gemini")
+    monkeypatch.setattr(config.settings, "gemini_api_key", "key-1")
+    monkeypatch.setattr(config.settings, "gemini_api_key_2", "")
+    monkeypatch.setattr(config.settings, "groq_api_key", "groq-key")
+    service = _make_llm_service()
+    assert isinstance(service, FailoverLLMService)
+    assert len(service._services) == 2
+    assert isinstance(service._services[-1], GroqLLMService)
 
 
 def test_factory_gemini_no_keys_raises(monkeypatch):

@@ -6,9 +6,13 @@ logger = structlog.get_logger()
 
 
 class FailoverLLMService:
-    """Wraps multiple same-provider LLM service instances (e.g. two Gemini API keys)
-    and falls over to the next one if a call fails — for spreading app-default load
-    across separate per-key rate limits, not for mixing providers.
+    """Wraps multiple LLM service instances and falls over to the next one if a call
+    fails — originally for spreading app-default load across separate per-key rate
+    limits on the same provider (e.g. two Gemini API keys), extended (Phase 12) to
+    also chain across different providers entirely (e.g. Gemini keys, then Groq as a
+    last resort) since each provider's free-tier quota is a genuinely separate pool.
+    Works either way — every wrapped service shares the same generate/stream_generate/
+    health_check interface regardless of provider.
 
     Streaming only fails over if the failing service hasn't yielded any tokens yet
     (a rate-limit/connection error typically happens before the first chunk). Once

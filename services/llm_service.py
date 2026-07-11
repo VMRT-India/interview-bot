@@ -69,6 +69,7 @@ def _make_llm_service():
     if settings.llm_provider == "gemini":
         from services.openai_compat_llm_service import OpenAICompatLLMService
         from services.failover_llm_service import FailoverLLMService
+        from services.groq_llm_service import GroqLLMService
 
         keys = [k for k in (settings.gemini_api_key, settings.gemini_api_key_2) if k]
         if not keys:
@@ -81,6 +82,13 @@ def _make_llm_service():
             )
             for key in keys
         ]
+        # Last-resort fallback on a completely separate provider/quota pool — Gemini's
+        # free-tier RPM cap (20/project) is tight enough that concurrent sessions can
+        # exhaust both app-default keys at once; Groq's quota is entirely independent.
+        # Only added when a Groq key is actually configured (it already is in prod,
+        # kept for BYOK) — no behavior change otherwise.
+        if settings.groq_api_key:
+            services.append(GroqLLMService())
         return services[0] if len(services) == 1 else FailoverLLMService(services)
     if settings.llm_provider == "mlx":
         from services.openai_compat_llm_service import OpenAICompatLLMService

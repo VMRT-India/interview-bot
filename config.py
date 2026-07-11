@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     gemini_api_key_2: str = ""
     gemini_model: str = "gemini-2.5-flash-lite"
 
+    # Free-tier failover chain (Phase 12 follow-up) — tried in this order ahead of/behind
+    # the Gemini keys above: NVIDIA NIM (first preference, ~40 RPM, unpublished/dynamic
+    # quota) -> Groq -> Gemini key 1 -> Gemini key 2 -> Cerebras (last resort, 8K context
+    # cap on its free tier). Each tier is only added to the chain if its key is set.
+    nvidia_api_key: str = ""
+    nvidia_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    cerebras_api_key: str = ""
+    cerebras_model: str = "gpt-oss-120b"
+
     tavily_api_key: str = ""
 
     # "ollama" (local daemon) | "huggingface" (HF's free Inference API, Ollama kept as fallback)

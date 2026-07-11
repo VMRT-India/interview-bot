@@ -54,6 +54,8 @@ class LLMService:
 _KNOWN_BYOK_BASE_URLS = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "openai": "https://api.openai.com/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
 }
 _DEFAULT_BYOK_MODELS = {
     "groq": "openai/gpt-oss-120b",
@@ -71,24 +73,44 @@ def _make_llm_service():
         from services.failover_llm_service import FailoverLLMService
         from services.groq_llm_service import GroqLLMService
 
-        keys = [k for k in (settings.gemini_api_key, settings.gemini_api_key_2) if k]
-        if not keys:
+        gemini_keys = [k for k in (settings.gemini_api_key, settings.gemini_api_key_2) if k]
+        if not gemini_keys:
             raise ValueError("llm_provider=gemini requires GEMINI_API_KEY to be set")
-        services = [
+
+        # Free-tier failover chain, in priority order. Each provider's free-tier quota
+        # is a genuinely separate pool, so chaining across providers (not just across
+        # Gemini keys) gives real headroom rather than doubling up on one rate limit.
+        # NVIDIA first (best RPM seen among the free options, though unpublished/dynamic
+        # so not fully guaranteed) -> Groq -> both Gemini keys -> Cerebras last (free
+        # tier caps context at 8K tokens, too small for this app's later-turn prompts,
+        # so it's a last resort rather than an equal peer).
+        services: list = []
+        if settings.nvidia_api_key:
+            services.append(
+                OpenAICompatLLMService(
+                    base_url=_KNOWN_BYOK_BASE_URLS["nvidia"],
+                    api_key=settings.nvidia_api_key,
+                    model=settings.nvidia_model,
+                )
+            )
+        if settings.groq_api_key:
+            services.append(GroqLLMService())
+        services.extend(
             OpenAICompatLLMService(
                 base_url=_KNOWN_BYOK_BASE_URLS["gemini"],
                 api_key=key,
                 model=settings.gemini_model,
             )
-            for key in keys
-        ]
-        # Last-resort fallback on a completely separate provider/quota pool — Gemini's
-        # free-tier RPM cap (20/project) is tight enough that concurrent sessions can
-        # exhaust both app-default keys at once; Groq's quota is entirely independent.
-        # Only added when a Groq key is actually configured (it already is in prod,
-        # kept for BYOK) — no behavior change otherwise.
-        if settings.groq_api_key:
-            services.append(GroqLLMService())
+            for key in gemini_keys
+        )
+        if settings.cerebras_api_key:
+            services.append(
+                OpenAICompatLLMService(
+                    base_url=_KNOWN_BYOK_BASE_URLS["cerebras"],
+                    api_key=settings.cerebras_api_key,
+                    model=settings.cerebras_model,
+                )
+            )
         return services[0] if len(services) == 1 else FailoverLLMService(services)
     if settings.llm_provider == "mlx":
         from services.openai_compat_llm_service import OpenAICompatLLMService

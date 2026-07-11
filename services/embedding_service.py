@@ -82,13 +82,13 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
         return list(await asyncio.gather(*[self.embed(t) for t in texts]))
 
     async def health_check(self) -> bool:
+        # Exercises the actual inference endpoint used by embed(), not HF's separate
+        # model-metadata API (huggingface.co/api/models/...) — that endpoint proved
+        # unreliable independently of the real inference path (router.huggingface.co),
+        # producing false "unreachable" alerts while embeddings were working fine.
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"https://huggingface.co/api/models/{settings.hf_embedding_model}",
-                    headers=self._headers,
-                )
-                return response.status_code == 200
+            await self.embed("health check")
+            return True
         except Exception:
             return False
 

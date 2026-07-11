@@ -179,15 +179,16 @@ async def test_ollama_health_check_false_on_failure():
     assert await provider.health_check() is False
 
 
-async def test_hf_health_check_true_on_200(monkeypatch):
+async def test_hf_health_check_true_on_successful_embed(monkeypatch):
+    # health_check() exercises the real inference endpoint via embed() itself, not a
+    # separate metadata API — that separate endpoint proved unreliable independently of
+    # the actual inference path, producing false "unreachable" alerts in production.
     import config
     monkeypatch.setattr(config.settings, "hf_api_token", "test-token")
     provider = HuggingFaceEmbeddingProvider()
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.post = AsyncMock(return_value=_mock_httpx_response([0.1] * 768))
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
